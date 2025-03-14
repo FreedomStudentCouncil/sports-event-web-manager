@@ -119,7 +119,7 @@ const ScoringPage: React.FC = () => {
         if (dialogs.length === 0) {
           handleSave();
         }
-      }, 3000);
+      }, 500);
       setAutoSaveTimerId(timerId);
     }
 
