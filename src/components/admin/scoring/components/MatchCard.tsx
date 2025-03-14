@@ -51,7 +51,7 @@ const MatchCard: React.FC<MatchCardProps> = ({ match, sport, onEdit }) => {
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <MatchIcon sx={{ mr: 1, color: 'text.secondary' }} />
           <Typography variant="subtitle2">
-            {t('match.number', { number: match.matchNumber })}
+            {t('match.number', { matchNumber: match.matchNumber })}
           </Typography>
         </Box>
         <Box>

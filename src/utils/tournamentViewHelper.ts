@@ -43,7 +43,7 @@ export const generateBracketMatches = (sport: Sport, t: (key: string) => string)
         ? t('tournament.thirdPlace')
         : match.round === maxRound && match.matchNumber === 1
         ? t('tournament.final')
-        : `${t('tournament.round')}${match.round} - ${t('match.number'), { number: match.matchNumber }}`,
+        : `${t('tournament.round')} ${match.round} - ${match.matchNumber}`,
       nextMatchId: match.matchNumber === 0 ? null :
         sport.matches.find(m =>
           m.round === match.round + 1 &&

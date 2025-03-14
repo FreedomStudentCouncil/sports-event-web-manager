@@ -47,6 +47,8 @@ interface TournamentScoringProps {
   sport: Sport;
   onUpdate: (updatedSport: Sport) => void;
   readOnly?: boolean; // 読み取り専用モードを追加
+  onDialogOpen?: () => void;  // 追加
+  onDialogClose?: () => void; // 追加
 }
 
 // トーナメントブラケットのmatchComponentの型定義を追加
@@ -73,7 +75,9 @@ interface MatchComponentProps {
 const TournamentScoring: React.FC<TournamentScoringProps> = ({ 
   sport, 
   onUpdate,
-  readOnly = false // デフォルトは編集可能
+  readOnly = false, // デフォルトは編集可能
+  onDialogOpen,
+  onDialogClose
 }) => {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -171,15 +175,25 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
 
   // 試合の編集
   const handleEditMatch = (match: Match) => {
-    if (readOnly) return;
+    if (readOnly || matchDialogOpen) return; // 既にダイアログが開いている場合は新しいダイアログを開かない
     setSelectedMatch(match);
     setMatchDialogOpen(true);
+    onDialogOpen?.(); // ダイアログを開く時に通知
   };
 
-  // 試合の更新（即時保存用）
+  // ダイアログを閉じる処理を改善
+  const closeDialog = useCallback(() => {
+    if (isDialogProcessing) return; // 処理中は閉じない
+    setMatchDialogOpen(false);
+    setSelectedMatch(null);
+    onDialogClose?.();
+  }, [isDialogProcessing, onDialogClose]);
+
+  // 試合の更新処理を改善
   const handleMatchUpdate = async (updatedMatch: Match) => {
     if (readOnly) return;
     setIsDialogProcessing(true);
+    
     try {
       const status = TournamentStructureHelper.getMatchStatus(updatedMatch);
       const newMatch = {
@@ -190,27 +204,21 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
                   undefined
       };
 
-      // 即時にローカル状態を更新（UXのため）
-      let newMatches = matches.map(m => 
-        m.id === newMatch.id ? newMatch : m
-      );
+      let newMatches = matches.map(m => m.id === newMatch.id ? newMatch : m);
 
       if (newMatch.winnerId) {
         newMatches = TournamentStructureHelper.progressWinnerToNextMatch(newMatch, newMatches);
       }
 
-      // ローカルのUI更新を先に行い、ダイアログを閉じる
       setMatches(newMatches);
-      setMatchDialogOpen(false);
       
-      // その後にデータ更新を行う
       const updatedSport = {
         ...sport,
         matches: newMatches
       };
-      
-      // 親コンポーネントに変更を通知
-      onUpdate(updatedSport);
+
+      await onUpdate(updatedSport);
+      closeDialog();
     } finally {
       setIsDialogProcessing(false);
     }
@@ -400,6 +408,18 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
     };
   }, []);
 
+  // ダイアログのマウント状態を制御
+  useEffect(() => {
+    return () => {
+      // コンポーネントのアンマウント時にダイアログの状態をリセット
+      if (matchDialogOpen) {
+        setMatchDialogOpen(false);
+        setSelectedMatch(null);
+        onDialogClose?.();
+      }
+    };
+  }, [matchDialogOpen, onDialogClose]);
+
   return (
     <Box>
       {/* readOnlyモードの場合は設定パネルを非表示 */}
@@ -535,12 +555,12 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
       {/* ダイアログのパフォーマンス最適化 */}
       {matchDialogOpen && selectedMatch && (
         <MatchEditDialog
-          open={true}
+          open={matchDialogOpen}
           match={selectedMatch}
           sport={sport}
           onSave={handleMatchUpdate}
           teamRosters={sport.roster?.grade1 || {}}
-          onClose={() => !isDialogProcessing && setMatchDialogOpen(false)}
+          onClose={closeDialog}
           disabled={isDialogProcessing}
         />
       )}

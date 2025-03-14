@@ -44,26 +44,59 @@ const ScoringPage: React.FC = () => {
 
   const { registerSaveHandler, unregisterSaveHandler, save, setHasUnsavedChanges } = useAdminLayout();
 
+  // リアルタイム更新用のフラグ
+  const lastUpdateTimeRef = useRef<number>(Date.now());
+  const updateQueueRef = useRef<Sport[]>([]);
+
+  const [isDialogOpen, setIsDialogOpen] = useState(false); // ダイアログの状態を追加
+
+  // クラウドデータとローカルデータの同期を制御するuseEffect
+  useEffect(() => {
+    if (sport && (!localSport || JSON.stringify(sport) !== JSON.stringify(localSport))) {
+      // クラウドからの新しいデータがある場合のみ更新
+      const hasLocalChanges = isProcessingRef.current || pendingUpdateRef.current;
+      if (!hasLocalChanges) {
+        setLocalSport(JSON.parse(JSON.stringify(sport)));
+      }
+    }
+  }, [sport, localSport]);
+
+  // データ更新ハンドラーを改善
   const handleSportUpdate = useCallback(async (updatedSport: Sport) => {
     if (isProcessingRef.current) return;
     
-    // 変更があることを通知
+    // 即時にローカル状態を更新
+    setLocalSport(updatedSport);
     setHasUnsavedChanges(true);
 
-    if (updateTimeoutRef.current) {
-      clearTimeout(updateTimeoutRef.current);
+    // 更新キューに追加
+    updateQueueRef.current.push(updatedSport);
+
+    // 前回の更新から100ms以上経過している場合のみ更新を実行
+    const now = Date.now();
+    if (now - lastUpdateTimeRef.current > 100) {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+
+      updateTimeoutRef.current = setTimeout(async () => {
+        try {
+          isProcessingRef.current = true;
+          const latestUpdate = updateQueueRef.current[updateQueueRef.current.length - 1];
+          
+          if (latestUpdate) {
+            const success = await updateData(latestUpdate);
+            if (success) {
+              lastUpdateTimeRef.current = Date.now();
+              updateQueueRef.current = [];
+            }
+          }
+        } finally {
+          isProcessingRef.current = false;
+        }
+      }, 50);
     }
-
-    pendingUpdateRef.current = updatedSport;
-    setLocalSport(updatedSport);
-
-    updateTimeoutRef.current = setTimeout(async () => {
-      if (!pendingUpdateRef.current) return;
-      
-      // 自動保存を修正
-      await save(`scoring_${sportId}`);
-    }, 2000);
-  }, [updateData, save, sportId, setHasUnsavedChanges]);
+  }, [updateData, setHasUnsavedChanges]);
 
   useEffect(() => {
     if (sport && !localSport) {
@@ -146,22 +179,21 @@ const ScoringPage: React.FC = () => {
     };
   }, [saveTimeout]);
 
-  // 初期マウント時にSaveHandlerを登録
+  // 保存ハンドラーの登録を改善
   useEffect(() => {
-    // このページの保存ハンドラを登録
-    const handleSave = async () => {
+    const saveHandler = async () => {
       if (!localSport || isProcessingRef.current) return false;
       
       try {
         isProcessingRef.current = true;
         setSaveStatus('saving');
         
-        // ローカルの変更を保存
         const result = await updateData(localSport);
         
         if (result) {
           setSaveStatus('saved');
           setShowSnackbar(true);
+          pendingUpdateRef.current = null;
           return true;
         } else {
           setSaveStatus('error');
@@ -178,14 +210,80 @@ const ScoringPage: React.FC = () => {
       }
     };
     
-    // スコープ名を一意にして登録
-    registerSaveHandler(handleSave, `scoring_${sportId}`);
+    registerSaveHandler(saveHandler, `scoring_${sportId}`);
     
     return () => {
-      // アンマウント時に登録解除
       unregisterSaveHandler(`scoring_${sportId}`);
+      // クリーンアップ時に保留中の操作をキャンセル
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
     };
   }, [registerSaveHandler, unregisterSaveHandler, localSport, updateData, sportId]);
+
+  // クラウドデータとの同期を強化
+  useEffect(() => {
+    if (!sport) return;
+
+    // ダイアログが開いている場合、または処理中の場合は同期をスキップ
+    if (isDialogOpen || isProcessingRef.current) {
+      return;
+    }
+
+    // 更新キューがある場合は同期をスキップ
+    if (updateQueueRef.current.length > 0) {
+      return;
+    }
+
+    // スポーツデータが実際に変更された場合のみ同期
+    const currentSportStr = JSON.stringify(localSport);
+    const newSportStr = JSON.stringify(sport);
+    
+    if (currentSportStr !== newSportStr) {
+      setLocalSport(JSON.parse(newSportStr));
+    }
+  }, [sport, isDialogOpen, localSport]);
+
+  // 更新キューのクリーンアップ
+  useEffect(() => {
+    return () => {
+      if (updateTimeoutRef.current) {
+        clearTimeout(updateTimeoutRef.current);
+      }
+      updateQueueRef.current = [];
+      isProcessingRef.current = false;
+    };
+  }, []);
+
+  // スコアリングコンポーネントのレンダリングを最適化
+  const renderScoringComponent = useCallback(() => {
+    if (!localSport) return null;
+
+    const props = {
+      sport: localSport,
+      onUpdate: handleSportUpdate,
+      key: `${localSport.id}-${Date.now()}`,
+      onDialogOpen: () => setIsDialogOpen(true),
+      onDialogClose: () => {
+        setIsDialogOpen(false);
+        // ダイアログが閉じられた後に最新データを同期
+        if (sport) {
+          setLocalSport(JSON.parse(JSON.stringify(sport)));
+        }
+      }
+    };
+
+    switch (localSport.type) {
+      case 'tournament':
+        return <TournamentScoring {...props} />;
+      case 'roundRobin':
+        return <RoundRobinScoring {...props} />;
+      case 'custom':
+        return <CustomScoring {...props} />;
+      default:
+        return null;
+    }
+  }, [localSport, handleSportUpdate, sport]);
 
   if (loading) {
     return (
@@ -237,15 +335,7 @@ const ScoringPage: React.FC = () => {
         <Divider sx={{ my: 2 }} />
 
         {/* スポーツタイプに合わせたスコアリングコンポーネント */}
-        {localSport.type === 'tournament' && (
-          <TournamentScoring sport={localSport} onUpdate={handleSportUpdate} />
-        )}
-        {localSport.type === 'roundRobin' && (
-          <RoundRobinScoring sport={localSport} onUpdate={handleSportUpdate} />
-        )}
-        {localSport.type === 'custom' && (
-          <CustomScoring sport={localSport} onUpdate={handleSportUpdate} />
-        )}
+        {renderScoringComponent()}
       </Paper>
 
       {/* 保存状態通知 */}
