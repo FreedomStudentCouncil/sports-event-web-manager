@@ -61,40 +61,52 @@ const ScoringPage: React.FC = () => {
     }
   }, [sport, localSport]);
 
-  // データ更新ハンドラーを改善
+  // ローカルデータの状態管理を改善
+  const [isLocalChange, setIsLocalChange] = useState(false);
+  const [lastCloudUpdate, setLastCloudUpdate] = useState<number>(Date.now());
+  const ignoreNextUpdateRef = useRef(false);
+
+  // useEffectでsportの変更を監視
+  useEffect(() => {
+    if (!sport || ignoreNextUpdateRef.current) {
+      ignoreNextUpdateRef.current = false;
+      return;
+    }
+
+    // ダイアログが開いている場合は更新を延期
+    if (isDialogOpen) {
+      return;
+    }
+
+    // ローカルの変更中は更新をスキップ
+    if (isLocalChange) {
+      return;
+    }
+
+    const currentTime = Date.now();
+    // 最後のクラウド更新から100ms以上経過している場合のみ更新
+    if (currentTime - lastCloudUpdate > 100) {
+      setLocalSport(JSON.parse(JSON.stringify(sport)));
+      setLastCloudUpdate(currentTime);
+    }
+  }, [sport, isDialogOpen, isLocalChange]);
+
+  // handleSportUpdateを改善
   const handleSportUpdate = useCallback(async (updatedSport: Sport) => {
-    if (isProcessingRef.current) return;
+    if (isProcessingRef.current) return false;
     
-    // 即時にローカル状態を更新
-    setLocalSport(updatedSport);
-    setHasUnsavedChanges(true);
-
-    // 更新キューに追加
-    updateQueueRef.current.push(updatedSport);
-
-    // 前回の更新から100ms以上経過している場合のみ更新を実行
-    const now = Date.now();
-    if (now - lastUpdateTimeRef.current > 100) {
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
+    try {
+      isProcessingRef.current = true;
+      setLocalSport(updatedSport);
+      
+      const success = await updateData(updatedSport);
+      if (success) {
+        setHasUnsavedChanges(false);
+        return true;
       }
-
-      updateTimeoutRef.current = setTimeout(async () => {
-        try {
-          isProcessingRef.current = true;
-          const latestUpdate = updateQueueRef.current[updateQueueRef.current.length - 1];
-          
-          if (latestUpdate) {
-            const success = await updateData(latestUpdate);
-            if (success) {
-              lastUpdateTimeRef.current = Date.now();
-              updateQueueRef.current = [];
-            }
-          }
-        } finally {
-          isProcessingRef.current = false;
-        }
-      }, 50);
+      return false;
+    } finally {
+      isProcessingRef.current = false;
     }
   }, [updateData, setHasUnsavedChanges]);
 
@@ -185,28 +197,11 @@ const ScoringPage: React.FC = () => {
       if (!localSport || isProcessingRef.current) return false;
       
       try {
-        isProcessingRef.current = true;
-        setSaveStatus('saving');
-        
-        const result = await updateData(localSport);
-        
-        if (result) {
-          setSaveStatus('saved');
-          setShowSnackbar(true);
-          pendingUpdateRef.current = null;
-          return true;
-        } else {
-          setSaveStatus('error');
-          setShowSnackbar(true);
-          return false;
-        }
+        const result = await handleSportUpdate(localSport);
+        return !!result;
       } catch (error) {
         console.error('Save error:', error);
-        setSaveStatus('error');
-        setShowSnackbar(true);
         return false;
-      } finally {
-        isProcessingRef.current = false;
       }
     };
     
@@ -214,35 +209,32 @@ const ScoringPage: React.FC = () => {
     
     return () => {
       unregisterSaveHandler(`scoring_${sportId}`);
-      // クリーンアップ時に保留中の操作をキャンセル
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
     };
-  }, [registerSaveHandler, unregisterSaveHandler, localSport, updateData, sportId]);
+  }, [registerSaveHandler, unregisterSaveHandler, localSport, sportId, handleSportUpdate]);
 
-  // クラウドデータとの同期を強化
+  // クラウドデータとの同期を強化（改善版）
   useEffect(() => {
     if (!sport) return;
 
-    // ダイアログが開いている場合、または処理中の場合は同期をスキップ
-    if (isDialogOpen || isProcessingRef.current) {
+    // ダイアログが開いている場合は同期を延期
+    if (isDialogOpen) {
       return;
     }
 
-    // 更新キューがある場合は同期をスキップ
-    if (updateQueueRef.current.length > 0) {
+    // ローカルの変更中は更新をスキップ
+    if (isProcessingRef.current) {
       return;
     }
 
-    // スポーツデータが実際に変更された場合のみ同期
+    // スポーツデータの同期
     const currentSportStr = JSON.stringify(localSport);
     const newSportStr = JSON.stringify(sport);
     
     if (currentSportStr !== newSportStr) {
       setLocalSport(JSON.parse(newSportStr));
+      setHasUnsavedChanges(false);
     }
-  }, [sport, isDialogOpen, localSport]);
+  }, [sport, isDialogOpen, localSport, setHasUnsavedChanges]);
 
   // 更新キューのクリーンアップ
   useEffect(() => {

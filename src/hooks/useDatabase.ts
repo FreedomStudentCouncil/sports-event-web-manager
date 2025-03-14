@@ -23,6 +23,9 @@ export function useDatabase<T>(path: string, initialValue: T | null = null) {
   // 変更されたフィールドの追跡
   const modifiedFieldsRef = useRef<Set<string>>(new Set());
 
+  const [lastUpdateTime, setLastUpdateTime] = useState<number>(Date.now());
+  const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     setLoading(true);
     const dbRef = ref(database, path);
@@ -31,51 +34,21 @@ export function useDatabase<T>(path: string, initialValue: T | null = null) {
       dbRef,
       (snapshot: DataSnapshot) => {
         const newData = snapshot.val() as T & { _version?: number };
-        
-        // バージョン管理
+
+        // バージョン管理と競合検出
         if (newData && newData._version !== undefined) {
-          // 外部更新を検出（他のユーザーによる更新）
-          if (localVersionRef.current > 0 && newData._version > localVersionRef.current && isUpdatingRef.current === false) {
-            // 変更を検出したフィールドを特定
-            const changedExternalFields = detectChangedFields(previousDataRef.current, newData);
+          if (localVersionRef.current > 0 && 
+              newData._version > localVersionRef.current && 
+              !isUpdatingRef.current) {
             
-            // ローカルで変更中のフィールドとの競合を検出
+            const changedExternalFields = detectChangedFields(previousDataRef.current, newData);
             const modifiedFieldsArray = Array.from(modifiedFieldsRef.current);
             const conflictingFields = modifiedFieldsArray.filter(field => 
               changedExternalFields.has(field));
             
             if (conflictingFields.length > 0) {
               setConflictStatus('detected');
-              console.log('変更の競合が検出されました:', conflictingFields);
-              
-              // 重要: 競合フィールド以外のみ更新
-              const nonConflictingData = { ...newData };
-              conflictingFields.forEach(field => {
-                // ネストされたフィールドの処理
-                if (field.includes('.')) {
-                  const parts = field.split('.');
-                  let current = data as any;
-                  let target = nonConflictingData as any;
-                  
-                  for (let i = 0; i < parts.length - 1; i++) {
-                    current = current[parts[i]];
-                    target = target[parts[i]];
-                  }
-                  
-                  const lastPart = parts[parts.length - 1];
-                  if (current && target) {
-                    target[lastPart] = current[lastPart];
-                  }
-                } else {
-                  // 単純なフィールドの場合
-                  if (data) {
-                    nonConflictingData[field as keyof typeof nonConflictingData] = (data as any)[field];
-                  }
-                }
-              });
-              // 競合を除いたデータで更新
-              setData(nonConflictingData as T);
-              return; // 競合があれば処理を終了
+              return;
             }
           }
           
@@ -83,10 +56,9 @@ export function useDatabase<T>(path: string, initialValue: T | null = null) {
           setVersion(newData._version);
         }
         
-        // 前のデータを保存（差分検出用）
         previousDataRef.current = newData;
         
-        // 更新中でなければ標準の更新
+        // 更新中でなければ即時更新
         if (!isUpdatingRef.current) {
           setData(newData);
         }
@@ -225,45 +197,55 @@ export function useDatabase<T>(path: string, initialValue: T | null = null) {
 
   // データの更新を管理するキュー処理
   const processUpdateQueue = useCallback(async () => {
-    if (isUpdatingRef.current || updateQueueRef.current.length === 0) return;
+    if (isUpdatingRef.current || updateQueueRef.current.length === 0) return false;
 
     isUpdatingRef.current = true;
     const { data: updateData, options, resolve, reject } = updateQueueRef.current[0];
 
     try {
-      await setData_(updateData, options);
+      const result = await setData_(updateData, options);
       updateQueueRef.current.shift();
-      resolve(true);
+      resolve(result);
+      return result;
     } catch (err) {
       console.error('Update failed:', err);
       reject(err);
+      return false;
     } finally {
       isUpdatingRef.current = false;
       if (updateQueueRef.current.length > 0) {
-        processUpdateQueue();
+        await processUpdateQueue();
       }
     }
-  }, [path]);
+  }, []);
 
   // 安全な更新処理
   const updateData = useCallback(async (updates: Partial<T>, options: UpdateOptions = {}): Promise<boolean> => {
+    if (debounceTimeoutRef.current) {
+      clearTimeout(debounceTimeoutRef.current);
+    }
+
     return new Promise((resolve, reject) => {
-      // 楽観的更新の場合、即座にUIを更新
-      if (options.optimistic && data) {
-        const optimisticData = { ...data, ...updates } as T;
-        setData(optimisticData);
-      }
-      
-      updateQueueRef.current.push({
-        data: updates,
-        options,
-        resolve,
-        reject
-      });
-      
-      processUpdateQueue();
+      debounceTimeoutRef.current = setTimeout(async () => {
+        try {
+          // 更新キューに追加
+          updateQueueRef.current.push({
+            data: updates,
+            options,
+            resolve,
+            reject
+          });
+          
+          // キューを処理
+          if (!isUpdatingRef.current) {
+            await processUpdateQueue();
+          }
+        } catch (error) {
+          reject(error);
+        }
+      }, 50);
     });
-  }, [processUpdateQueue, data]);
+  }, [processUpdateQueue]);
 
   // フィールド変更の追跡
   const trackFieldChange = useCallback((fieldName: string) => {
