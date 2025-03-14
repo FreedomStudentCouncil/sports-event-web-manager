@@ -210,15 +210,23 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
         newMatches = TournamentStructureHelper.progressWinnerToNextMatch(newMatch, newMatches);
       }
 
+      // ローカルの状態を先に更新
       setMatches(newMatches);
-      
+
+      // スポーツデータを更新
       const updatedSport = {
         ...sport,
-        matches: newMatches
+        matches: newMatches,
+        teams: teams // チームデータも含める
       };
 
+      // 直接更新を実行
       await onUpdate(updatedSport);
       closeDialog();
+    } catch (error) {
+      console.error('Error saving match:', error);
+      // エラー時は古いデータに戻す
+      setMatches(matches);
     } finally {
       setIsDialogProcessing(false);
     }
@@ -419,6 +427,16 @@ const TournamentScoring: React.FC<TournamentScoringProps> = ({
       }
     };
   }, [matchDialogOpen, onDialogClose]);
+
+  // リファレンスを保持するために修正
+  useEffect(() => {
+    if (sport.matches) {
+      setMatches(sport.matches);
+    }
+    if (sport.teams) {
+      setTeams(sport.teams);
+    }
+  }, [sport.matches, sport.teams]);
 
   return (
     <Box>
